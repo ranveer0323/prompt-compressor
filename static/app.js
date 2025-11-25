@@ -2,6 +2,7 @@
 (async function(){
   // DOM refs
   const promptInput = document.getElementById('promptInput');
+  const completeFlowBtn = document.getElementById('completeFlowBtn');
   const analyzeBtn = document.getElementById('analyzeBtn');
   const pruneBtn = document.getElementById('pruneBtn');
   const hybridBtn = document.getElementById('hybridBtn');
@@ -39,14 +40,105 @@
     document.getElementById('keepRatioValue').textContent = percent + '%';
   });
 
+  // Complete flow: analyze → prune → hybrid → generate
+  completeFlowBtn.addEventListener('click', async () => {
+    const prompt = promptInput.value.trim();
+    if(!prompt){ alert('Paste a prompt first'); return; }
+    
+    completeFlowBtn.disabled = true;
+    completeFlowBtn.innerHTML = '<span>⏳ Running...</span>';
+    
+    try {
+      // Step 1: Analyze
+      console.log('Step 1: Analyzing...');
+      clearUI();
+      const analyzeRes = await jsonFetch('/api/analyze', { prompt });
+      if(analyzeRes.error){ throw new Error(analyzeRes.error); }
+      renderAnalysis(analyzeRes);
+      origPromptEl.textContent = prompt;
+      origTokensEl.textContent = analyzeRes.token_count || '-';
+      
+      // Step 2: Phrase Prune
+      console.log('Step 2: Phrase pruning...');
+      const pruneBody = { 
+        prompt, 
+        keep_ratio: parseFloat(keepRatio.value), 
+        max_phrase_len: parseInt(maxPhraseLen.value), 
+        sim_threshold: parseFloat(simThreshold.value) 
+      };
+      const pruneRes = await jsonFetch('/api/prune', pruneBody);
+      if(pruneRes.error){ throw new Error(pruneRes.error); }
+      lastRun = pruneRes.run_id;
+      prunedPromptEl.textContent = pruneRes.compressed || '';
+      prunedTokensEl.textContent = pruneRes.compressed ? pruneRes.compressed.split(/\s+/).length : '-';
+      pruneSimEl.textContent = pruneRes.sim ? pruneRes.sim.toFixed(4) : '-';
+      renderIterLog(pruneRes.log || []);
+      
+      // Step 3: Hybrid Compress
+      console.log('Step 3: Hybrid compressing...');
+      const hybridBody = { 
+        prompt, 
+        sim_threshold: parseFloat(simThreshold.value), 
+        keep_ratio_phrases: parseFloat(keepRatio.value) 
+      };
+      const hybridRes = await jsonFetch('/api/hybrid', hybridBody);
+      if(hybridRes.error){ throw new Error(hybridRes.error); }
+      hybridPromptEl.textContent = hybridRes.hybrid || '';
+      hybridTokensEl.textContent = hybridRes.hybrid ? hybridRes.hybrid.split(/\s+/).length : '-';
+      
+      // Step 4: Generate with Gemini
+      console.log('Step 4: Generating with Gemini...');
+      origOutputEl.textContent = 'Generating...';
+      prunedOutputEl.textContent = 'Generating...';
+      hybridOutputEl.textContent = 'Generating...';
+      
+      const originalResp = await jsonFetch('/api/generate', { which:'original', prompt });
+      origOutputEl.textContent = originalResp.text || JSON.stringify(originalResp, null, 2);
+      
+      const prunedResp = await jsonFetch('/api/generate', { which:'pruned', run_id: lastRun });
+      prunedOutputEl.textContent = prunedResp.text || JSON.stringify(prunedResp, null, 2);
+      
+      const hybridResp = await jsonFetch('/api/generate', { which:'hybrid', run_id: lastRun });
+      hybridOutputEl.textContent = hybridResp.text || JSON.stringify(hybridResp, null, 2);
+      
+      // Step 5: Validate similarity
+      console.log('Step 5: Computing similarities...');
+      try {
+        const simP = await jsonFetch('/api/validate', { a: originalResp.text || '', b: prunedResp.text || '' });
+        const simH = await jsonFetch('/api/validate', { a: originalResp.text || '', b: hybridResp.text || '' });
+        pruneSimEl.textContent = simP.similarity ? simP.similarity.toFixed(4) : '-';
+        hybridSimEl.textContent = simH.similarity ? simH.similarity.toFixed(4) : '-';
+      } catch(e){
+        console.warn('validate failed', e);
+      }
+      
+      console.log('✅ Complete flow finished!');
+      alert('✅ Complete flow finished! Check the tabs for results.');
+      
+    } catch(e) {
+      console.error('Complete flow error:', e);
+      alert('❌ Error during complete flow: ' + e.message);
+    } finally {
+      completeFlowBtn.disabled = false;
+      completeFlowBtn.innerHTML = '<span>🚀 Complete Flow</span>';
+    }
+  });
+
   analyzeBtn.addEventListener('click', async () => {
     const prompt = promptInput.value.trim();
     if(!prompt){ alert('Paste a prompt first'); return; }
     clearUI();
-    const res = await jsonFetch('/api/analyze', { prompt });
-    renderAnalysis(res);
-    origPromptEl.textContent = prompt;
-    origTokensEl.textContent = res.token_count || '-';
+    try {
+      const res = await jsonFetch('/api/analyze', { prompt });
+      console.log('Analyze response:', res);
+      if(res.error){ alert('Error: ' + res.error); return; }
+      renderAnalysis(res);
+      origPromptEl.textContent = prompt;
+      origTokensEl.textContent = res.token_count || '-';
+    } catch(e) {
+      console.error('Analyze failed:', e);
+      alert('Error during analysis: ' + e.message);
+    }
   });
 
   pruneBtn.addEventListener('click', async () => {
@@ -125,21 +217,35 @@
 
   // helpers
   function renderAnalysis(res){
-    // words not full details; we expect top_phrase_candidates
-    wordsTableBody.innerHTML = '';
-    phraseTableBody.innerHTML = '';
+    try {
+      // words not full details; we expect top_phrase_candidates
+      wordsTableBody.innerHTML = '';
+      phraseTableBody.innerHTML = '';
 
-    const candidates = res.top_phrase_candidates || [];
-    // render phrase candidates (first 200)
-    for(const p of candidates.slice(0,200)){
-      const row = document.createElement('tr');
-      row.innerHTML = `<td>${escapeHtml(p.phrase || '')}</td><td>${(p.norm||0).toFixed(4)}</td>`;
-      phraseTableBody.appendChild(row);
+      const candidates = res.top_phrase_candidates || [];
+      console.log('Candidates count:', candidates.length);
+      
+      if(candidates.length === 0) {
+        phraseTableBody.innerHTML = '<tr><td colspan="2" class="text-muted">No candidates found</td></tr>';
+        return;
+      }
+
+      // render phrase candidates (first 200)
+      for(const p of candidates.slice(0,200)){
+        const row = document.createElement('tr');
+        row.innerHTML = `<td>${escapeHtml(p.phrase || '')}</td><td class="text-end">${(p.norm||0).toFixed(4)}</td>`;
+        phraseTableBody.appendChild(row);
+      }
+
+      // draw a simple chart based on norms of candidates
+      const norms = candidates.slice(0,60).map(x=>x.norm||0);
+      if(norms.length > 0) {
+        drawChart(norms);
+      }
+    } catch(e) {
+      console.error('renderAnalysis error:', e);
+      phraseTableBody.innerHTML = '<tr><td colspan="2" class="text-danger">Error rendering analysis</td></tr>';
     }
-
-    // draw a simple chart based on norms of candidates
-    const norms = candidates.slice(0,60).map(x=>x.norm||0);
-    drawChart(norms);
   }
 
   function renderIterLog(log){
@@ -154,13 +260,36 @@
   }
 
   function drawChart(values){
-    const ctx = document.getElementById('surprisalChart').getContext('2d');
-    if(surprisalChart) surprisalChart.destroy();
-    surprisalChart = new Chart(ctx, {
-      type: 'bar',
-      data: { labels: values.map((_,i)=>i+1), datasets: [{ label:'norm surprisal', data: values }] },
-      options: { responsive:true, plugins:{ legend:{display:false} }, scales:{ x:{ display:false } } }
-    });
+    try {
+      const canvas = document.getElementById('surprisalChart');
+      if(!canvas) {
+        console.error('Chart canvas not found');
+        return;
+      }
+      const ctx = canvas.getContext('2d');
+      if(surprisalChart) surprisalChart.destroy();
+      surprisalChart = new Chart(ctx, {
+        type: 'bar',
+        data: { 
+          labels: values.map((_,i)=>i+1), 
+          datasets: [{ 
+            label:'norm surprisal', 
+            data: values,
+            backgroundColor: 'rgba(13, 110, 253, 0.6)',
+            borderColor: 'rgba(13, 110, 253, 1)',
+            borderWidth: 1
+          }] 
+        },
+        options: { 
+          responsive:true, 
+          maintainAspectRatio: true,
+          plugins:{ legend:{display:false} }, 
+          scales:{ x:{ display:false }, y:{ beginAtZero:true } } 
+        }
+      });
+    } catch(e) {
+      console.error('drawChart error:', e);
+    }
   }
 
   function clearUI(){

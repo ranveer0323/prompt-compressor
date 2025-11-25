@@ -2,12 +2,16 @@ import os
 import uuid
 import json
 from flask import Flask, request, jsonify, render_template
+from dotenv import load_dotenv
 from compressor.pruner import greedy_phrase_prune, phrase_surprisals_for_segment
 from compressor.hybrid import hybrid_compress
 from models.embedder import Embedder
 from models.scorer import Scorer
 from models.summarizer import Summarizer
 from compressor.utils import rule_compress, cleanup_text_t5
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Optional: Gemini client
 try:
@@ -19,6 +23,11 @@ try:
     from google import genai
 except Exception:
     genai = None
+
+try:
+    from sentence_transformers import util
+except Exception:
+    util = None
 
 app = Flask(__name__, template_folder="templates")
 app.config.from_pyfile("instance/config.py", silent=True)  # optional
@@ -150,7 +159,8 @@ def api_validate():
     b = data.get("b", "")
     if not a or not b:
         return jsonify({"error": "both 'a' and 'b' required"}), 400
-    sim = EMBEDDER = EMBEDDER if False else EMBEDDER  # silence linter
+    if not util:
+        return jsonify({"error": "sentence_transformers not available"}), 500
     emb_a = EMBEDDER.encode(a, convert_to_tensor=True)
     emb_b = EMBEDDER.encode(b, convert_to_tensor=True)
     score = float(util.pytorch_cos_sim(emb_a, emb_b).item())
