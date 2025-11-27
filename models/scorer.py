@@ -13,16 +13,38 @@ class Scorer:
 
     @torch.no_grad()
     def token_logprobs_for_sequence(self, token_ids):
-        """Return list of log probs (log p(token_i | tokens[:i])) for each token in token_ids"""
-        if len(token_ids) == 0:
-            return []
+        """
+        Return list of log probs.
+        For a sequence [A, B, C], we want:
+        - log P(B|A)
+        - log P(C|A,B)
+        (The first token A has no conditional probability in this context, 
+         so we usually assign it 0 or ignore it. Here we return 0.0 for the first token).
+        """
+        if len(token_ids) < 2:
+            return [0.0] * len(token_ids)
+            
         ids = torch.tensor([token_ids], device=self.device)
         outputs = self.model(ids)
-        logits = outputs.logits.squeeze(0)  # (seq_len, vocab)
-        logprobs = torch.log_softmax(logits, dim=-1)
-        # For token at position i, take logprob at position i for token token_ids[i]
-        out = [float(logprobs[pos, tok].item()) for pos, tok in enumerate(token_ids)]
-        return out
+        
+        # Logits shape: (1, seq_len, vocab_size)
+        # Shift logits and labels:
+        # logits[0, :-1] predicts the next token
+        # labels[0, 1:] are the actual next tokens
+        shift_logits = outputs.logits[0, :-1, :]
+        shift_labels = ids[0, 1:]
+        
+        # Gather log probabilities
+        # log_softmax gives log probabilities across vocab
+        log_probs_all = torch.log_softmax(shift_logits, dim=-1)
+        
+        # Select the log prob of the actual token that appeared
+        # gather expects index to have same dimensions, so we unsqueeze
+        target_log_probs = log_probs_all.gather(1, shift_labels.unsqueeze(1)).squeeze(1)
+        
+        # Result list: First token gets 0.0 (or high probability) as it's the start context
+        # Convert tensor to list of floats
+        return [0.0] + target_log_probs.tolist()
 
     def tokenize(self, text):
         return self.tokenizer.tokenize(text)

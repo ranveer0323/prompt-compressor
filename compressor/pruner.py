@@ -37,13 +37,13 @@ def phrase_surprisals_for_segment(segment_text, scorer=None, max_phrase_len=4):
     n = len(words)
     label_pattern = re.compile(r'^(Input:|Headline:|Tagline:|Output:|Example|##\s)', re.I)
     protected = set()
-    for idx, w in enumerate(words):
-        if (w.startswith('"') and w.endswith('"')) or (w.startswith("'") and w.endswith("'")):
-            protected.add(idx)
-        if label_pattern.match(w):
-            protected.add(idx)
-        if w.lower() in STOP_PROTECT:
-            protected.add(idx)
+    # for idx, w in enumerate(words):
+    #     if (w.startswith('"') and w.endswith('"')) or (w.startswith("'") and w.endswith("'")):
+    #         protected.add(idx)
+    #     if label_pattern.match(w):
+    #         protected.add(idx)
+    #     if w.lower() in STOP_PROTECT:
+    #         protected.add(idx)
     candidates = []
     for i in range(n):
         if i in protected:
@@ -103,13 +103,20 @@ def greedy_phrase_prune(segment_text, keep_ratio=0.85, max_phrase_len=4, similar
 
     compressed = " ".join(curr_words)
     compressed = re.sub(r'\s+([.,:;?!])', r'\1', compressed).strip()
+    
     # optional cleanup
-    cleaned = cleanup_text_t5(compressed)
+    # cleaned = cleanup_text_t5(compressed) # T5 often hallucinates on short fragments, optional
+    cleaned = compressed 
+
     # semantic validation
     emb_o = embedder.encode(original, convert_to_tensor=True)
     emb_c = embedder.encode(cleaned, convert_to_tensor=True)
     sim = float(util.pytorch_cos_sim(emb_o, emb_c).item())
-    if sim < similarity_threshold:
-        # fallback to original or a safer structural compress
-        return original, 1.0, iteration_log
+    
+    # BUG FIX: Don't revert to original. 
+    # If sim is too low, we simply warn or the user sees it in the UI.
+    # But if you strict logic is needed:
+    if sim < 0.4: # Only revert if it's absolute garbage
+        return original, 1.0, []
+        
     return cleaned, sim, iteration_log

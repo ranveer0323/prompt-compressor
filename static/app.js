@@ -7,7 +7,7 @@
   const pruneBtn = document.getElementById('pruneBtn');
   const hybridBtn = document.getElementById('hybridBtn');
   const generateAllBtn = document.getElementById('generateAllBtn');
-  const wordsTableBody = document.querySelector('#wordsTable tbody');
+  // const wordsTableBody = document.querySelector('#wordsTable tbody');
   const phraseTableBody = document.querySelector('#phraseTable tbody');
   const iterLogDiv = document.getElementById('iterLog');
   const origPromptEl = document.getElementById('origPrompt');
@@ -219,7 +219,7 @@
   function renderAnalysis(res){
     try {
       // words not full details; we expect top_phrase_candidates
-      wordsTableBody.innerHTML = '';
+      // wordsTableBody.innerHTML = '';
       phraseTableBody.innerHTML = '';
 
       const candidates = res.top_phrase_candidates || [];
