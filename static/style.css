@@ -111,7 +111,7 @@ body {
 .code-block {
   font-family: var(--font-code);
   font-size: 0.85rem;
-  background-color: #f8fafc; /* light theme code block */
+  background-color: #f8fafc; 
   border: 1px solid var(--border-color);
   border-radius: 0.5rem;
   padding: 1rem;

@@ -111,21 +111,23 @@
             <!-- Token Grid -->
             <div class="row g-2 mb-3">
               <div class="col-4 text-center">
-                <div class="p-2 bg-light rounded-3">
+                <div class="p-2 bg-light rounded-3 h-100 d-flex flex-column justify-content-center">
                   <div class="text-xs text-muted mb-1">Orig</div>
                   <div id="origTokens" class="fw-bold text-dark">-</div>
                 </div>
               </div>
               <div class="col-4 text-center">
-                <div class="p-2 bg-blue-50 rounded-3 border border-blue-100">
+                <div class="p-2 bg-blue-50 rounded-3 border border-blue-100 h-100">
                   <div class="text-xs text-primary mb-1">Pruned</div>
                   <div id="prunedTokens" class="fw-bold text-primary">-</div>
+                  <div id="prunedPct" class="badge bg-white text-primary border border-primary-subtle rounded-pill mt-1" style="font-size: 0.65rem; display:none;">0%</div>
                 </div>
               </div>
               <div class="col-4 text-center">
-                <div class="p-2 bg-purple-50 rounded-3 border border-purple-100">
+                <div class="p-2 bg-purple-50 rounded-3 border border-purple-100 h-100">
                   <div class="text-xs text-info mb-1">Hybrid</div>
                   <div id="hybridTokens" class="fw-bold text-info">-</div>
+                  <div id="hybridPct" class="badge bg-white text-info border border-info-subtle rounded-pill mt-1" style="font-size: 0.65rem; display:none;">0%</div>
                 </div>
               </div>
             </div>

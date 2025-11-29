@@ -1,4 +1,3 @@
-// static/app.js
 (async function(){
   // DOM refs
   const promptInput = document.getElementById('promptInput');
@@ -7,7 +6,6 @@
   const pruneBtn = document.getElementById('pruneBtn');
   const hybridBtn = document.getElementById('hybridBtn');
   const generateAllBtn = document.getElementById('generateAllBtn');
-  // const wordsTableBody = document.querySelector('#wordsTable tbody');
   const phraseTableBody = document.querySelector('#phraseTable tbody');
   const iterLogDiv = document.getElementById('iterLog');
   const origPromptEl = document.getElementById('origPrompt');
@@ -40,6 +38,19 @@
     document.getElementById('keepRatioValue').textContent = percent + '%';
   });
 
+  // Helper to calculate and display percentage
+  function updatePct(origCount, newCount, elementId) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    if (!origCount || !newCount || origCount <= 0) {
+      el.style.display = 'none';
+      return;
+    }
+    const reduction = ((1 - (newCount / origCount)) * 100);
+    el.textContent = `-${Math.round(reduction)}%`;
+    el.style.display = 'inline-block';
+  }
+
   // Complete flow: analyze → prune → hybrid → generate
   completeFlowBtn.addEventListener('click', async () => {
     const prompt = promptInput.value.trim();
@@ -56,7 +67,9 @@
       if(analyzeRes.error){ throw new Error(analyzeRes.error); }
       renderAnalysis(analyzeRes);
       origPromptEl.textContent = prompt;
-      origTokensEl.textContent = analyzeRes.token_count || '-';
+      
+      const origCount = analyzeRes.token_count || 0;
+      origTokensEl.textContent = origCount;
       
       // Step 2: Phrase Prune
       console.log('Step 2: Phrase pruning...');
@@ -70,8 +83,12 @@
       if(pruneRes.error){ throw new Error(pruneRes.error); }
       lastRun = pruneRes.run_id;
       prunedPromptEl.textContent = pruneRes.compressed || '';
-      prunedTokensEl.textContent = pruneRes.compressed ? pruneRes.compressed.split(/\s+/).length : '-';
-      pruneSimEl.textContent = pruneRes.sim ? pruneRes.sim.toFixed(4) : '-';
+      
+      const prunedCount = pruneRes.compressed ? pruneRes.compressed.split(/\s+/).length : 0;
+      prunedTokensEl.textContent = prunedCount || '-';
+      updatePct(origCount, prunedCount, 'prunedPct');
+
+      // pruneSimEl.textContent = pruneRes.sim ? pruneRes.sim.toFixed(4) : '-';
       renderIterLog(pruneRes.log || []);
       
       // Step 3: Hybrid Compress
@@ -84,7 +101,10 @@
       const hybridRes = await jsonFetch('/api/hybrid', hybridBody);
       if(hybridRes.error){ throw new Error(hybridRes.error); }
       hybridPromptEl.textContent = hybridRes.hybrid || '';
-      hybridTokensEl.textContent = hybridRes.hybrid ? hybridRes.hybrid.split(/\s+/).length : '-';
+      
+      const hybridCount = hybridRes.hybrid ? hybridRes.hybrid.split(/\s+/).length : 0;
+      hybridTokensEl.textContent = hybridCount || '-';
+      updatePct(origCount, hybridCount, 'hybridPct');
       
       // Step 4: Generate with Gemini
       console.log('Step 4: Generating with Gemini...');
@@ -113,14 +133,13 @@
       }
       
       console.log('✅ Complete flow finished!');
-      alert('✅ Complete flow finished! Check the tabs for results.');
       
     } catch(e) {
       console.error('Complete flow error:', e);
-      alert('❌ Error during complete flow: ' + e.message);
+      alert('❌ Error: ' + e.message);
     } finally {
       completeFlowBtn.disabled = false;
-      completeFlowBtn.innerHTML = '<span>🚀 Complete Flow</span>';
+      completeFlowBtn.innerHTML = '<span>⚡ Run Auto-Compress</span>';
     }
   });
 
@@ -130,7 +149,6 @@
     clearUI();
     try {
       const res = await jsonFetch('/api/analyze', { prompt });
-      console.log('Analyze response:', res);
       if(res.error){ alert('Error: ' + res.error); return; }
       renderAnalysis(res);
       origPromptEl.textContent = prompt;
@@ -148,14 +166,18 @@
     const body = { prompt, keep_ratio: parseFloat(keepRatio.value), max_phrase_len: parseInt(maxPhraseLen.value), sim_threshold: parseFloat(simThreshold.value) };
     const res = await jsonFetch('/api/prune', body);
     if(res.error){ alert(res.error); return; }
-    // update UI
+    
     lastRun = res.run_id;
     prunedPromptEl.textContent = res.compressed || '';
-    prunedOutputEl.textContent = '(press Generate All to call Gemini)';
-    prunedTokensEl.textContent = res.compressed ? res.compressed.split(/\s+/).length : '-';
-    pruneSimEl.textContent = (res.sim || '-').toFixed ? (res.sim||'-') : res.sim;
+    prunedOutputEl.textContent = '(press Generate to view output)';
+    
+    const origCount = parseInt(origTokensEl.textContent) || 0;
+    const count = res.compressed ? res.compressed.split(/\s+/).length : 0;
+    prunedTokensEl.textContent = count || '-';
+    updatePct(origCount, count, 'prunedPct');
+    
     renderIterLog(res.log || []);
-    // store JSON for download
+    
     downloadJson.href = URL.createObjectURL(new Blob([JSON.stringify(res, null, 2)], {type:'application/json'}));
     downloadJson.download = 'prune_run_'+Date.now()+'.json';
   });
@@ -167,31 +189,34 @@
     const body = { prompt, sim_threshold: parseFloat(simThreshold.value), keep_ratio_phrases: parseFloat(keepRatio.value) };
     const res = await jsonFetch('/api/hybrid', body);
     if(res.error){ alert(res.error); return; }
+    
     lastRun = res.run_id;
     hybridPromptEl.textContent = res.hybrid || '';
-    hybridTokensEl.textContent = res.hybrid ? res.hybrid.split(/\s+/).length : '-';
-    hybridSimEl.textContent = '-';
+    
+    const origCount = parseInt(origTokensEl.textContent) || 0;
+    const count = res.hybrid ? res.hybrid.split(/\s+/).length : 0;
+    hybridTokensEl.textContent = count || '-';
+    updatePct(origCount, count, 'hybridPct');
+    
     downloadJson.href = URL.createObjectURL(new Blob([JSON.stringify(res, null, 2)], {type:'application/json'}));
     downloadJson.download = 'hybrid_run_'+Date.now()+'.json';
   });
 
   generateAllBtn.addEventListener('click', async () => {
     if(!promptInput.value.trim()){ alert('Paste a prompt first'); return; }
-    // generate for original
     origOutputEl.textContent = 'Generating...';
     prunedOutputEl.textContent = 'Generating...';
     hybridOutputEl.textContent = 'Generating...';
-    // build run payloads — prefer lastRun runs if present
-    // original generation
+    
     const originalResp = await jsonFetch('/api/generate', { which:'original', prompt: promptInput.value });
     origOutputEl.textContent = originalResp.text || JSON.stringify(originalResp, null, 2);
-    // pruned: use lastRun if exists
+    
     if(lastRun){
       const prunedResp = await jsonFetch('/api/generate', { which:'pruned', run_id: lastRun });
       prunedOutputEl.textContent = prunedResp.text || JSON.stringify(prunedResp, null, 2);
       const hybridResp = await jsonFetch('/api/generate', { which:'hybrid', run_id: lastRun });
       hybridOutputEl.textContent = hybridResp.text || JSON.stringify(hybridResp, null, 2);
-      // compute similarity via validate endpoint
+      
       try {
         const simP = await jsonFetch('/api/validate', { a: originalResp.text || '', b: prunedResp.text || '' });
         const simH = await jsonFetch('/api/validate', { a: originalResp.text || '', b: hybridResp.text || '' });
@@ -201,7 +226,6 @@
         console.warn('validate failed', e);
       }
     } else {
-      // generate pruned/hybrid directly from prompt strings in UI
       const prunedText = prunedPromptEl.textContent || '';
       if(prunedText) {
         const prunedResp = await jsonFetch('/api/generate', { which:'pruned', prompt: prunedText });
@@ -218,33 +242,27 @@
   // helpers
   function renderAnalysis(res){
     try {
-      // words not full details; we expect top_phrase_candidates
-      // wordsTableBody.innerHTML = '';
       phraseTableBody.innerHTML = '';
-
       const candidates = res.top_phrase_candidates || [];
-      console.log('Candidates count:', candidates.length);
       
       if(candidates.length === 0) {
-        phraseTableBody.innerHTML = '<tr><td colspan="2" class="text-muted">No candidates found</td></tr>';
+        phraseTableBody.innerHTML = '<tr><td colspan="2" class="text-muted text-center py-2">No candidates found</td></tr>';
         return;
       }
 
-      // render phrase candidates (first 200)
       for(const p of candidates.slice(0,200)){
         const row = document.createElement('tr');
-        row.innerHTML = `<td>${escapeHtml(p.phrase || '')}</td><td class="text-end">${(p.norm||0).toFixed(4)}</td>`;
+        row.innerHTML = `<td>${escapeHtml(p.phrase || '')}</td><td class="text-end font-monospace">${(p.norm||0).toFixed(4)}</td>`;
         phraseTableBody.appendChild(row);
       }
 
-      // draw a simple chart based on norms of candidates
       const norms = candidates.slice(0,60).map(x=>x.norm||0);
       if(norms.length > 0) {
         drawChart(norms);
       }
     } catch(e) {
       console.error('renderAnalysis error:', e);
-      phraseTableBody.innerHTML = '<tr><td colspan="2" class="text-danger">Error rendering analysis</td></tr>';
+      phraseTableBody.innerHTML = '<tr><td colspan="2" class="text-danger text-center">Error rendering analysis</td></tr>';
     }
   }
 
@@ -253,8 +271,8 @@
     if(!log || log.length === 0){ iterLogDiv.textContent = '(no iterations or nothing removable)'; return; }
     log.forEach(item => {
       const div = document.createElement('div');
-      div.className = 'mb-1';
-      div.innerHTML = `<strong>Iter ${item.iter}</strong> — removed: <em>${escapeHtml(item.removed_phrase)}</em> — words now: ${item.current_word_count}`;
+      div.className = 'mb-1 small border-bottom pb-1';
+      div.innerHTML = `<span class="text-primary fw-bold">Iter ${item.iter}</span> <span class="text-muted">removed:</span> <span class="bg-warning-subtle px-1 rounded">${escapeHtml(item.removed_phrase)}</span> <span class="text-muted float-end">words: ${item.current_word_count}</span>`;
       iterLogDiv.appendChild(div);
     });
   }
@@ -262,29 +280,49 @@
   function drawChart(values){
     try {
       const canvas = document.getElementById('surprisalChart');
-      if(!canvas) {
-        console.error('Chart canvas not found');
-        return;
-      }
+      if(!canvas) return;
       const ctx = canvas.getContext('2d');
       if(surprisalChart) surprisalChart.destroy();
+      
+      // Gradient
+      let gradient = ctx.createLinearGradient(0, 0, 0, 200);
+      gradient.addColorStop(0, 'rgba(79, 70, 229, 0.8)');
+      gradient.addColorStop(1, 'rgba(79, 70, 229, 0.1)'); 
+
       surprisalChart = new Chart(ctx, {
         type: 'bar',
         data: { 
           labels: values.map((_,i)=>i+1), 
           datasets: [{ 
-            label:'norm surprisal', 
+            label:'Surprisal Score', 
             data: values,
-            backgroundColor: 'rgba(13, 110, 253, 0.6)',
-            borderColor: 'rgba(13, 110, 253, 1)',
-            borderWidth: 1
+            backgroundColor: gradient,
+            borderRadius: 2,
+            barPercentage: 0.8
           }] 
         },
         options: { 
-          responsive:true, 
-          maintainAspectRatio: true,
-          plugins:{ legend:{display:false} }, 
-          scales:{ x:{ display:false }, y:{ beginAtZero:true } } 
+          responsive: true, 
+          maintainAspectRatio: false,
+          plugins:{ 
+            legend:{display:false},
+            tooltip: {
+              backgroundColor: '#1e1b4b',
+              titleFont: { family: 'Inter' },
+              bodyFont: { family: 'JetBrains Mono' },
+              padding: 10,
+              cornerRadius: 4,
+              displayColors: false
+            }
+          }, 
+          scales:{ 
+            x:{ display:false }, 
+            y:{ 
+              beginAtZero:true, 
+              grid: { color: '#f1f5f9', borderDash: [5, 5] },
+              ticks: { font: { family: 'Inter', size: 10 } }
+            } 
+          } 
         }
       });
     } catch(e) {
@@ -304,6 +342,12 @@
     hybridTokensEl.textContent = '-';
     pruneSimEl.textContent = '-';
     hybridSimEl.textContent = '-';
+    
+    // Hide badges
+    const pBadge = document.getElementById('prunedPct');
+    if(pBadge) pBadge.style.display = 'none';
+    const hBadge = document.getElementById('hybridPct');
+    if(hBadge) hBadge.style.display = 'none';
   }
 
   function escapeHtml(s){ if(!s) return ''; return s.replace(/[&<>"']/g, (c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
