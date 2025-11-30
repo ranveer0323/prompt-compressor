@@ -13,12 +13,7 @@ from compressor.utils import rule_compress, cleanup_text_t5
 # Load environment variables from .env file
 load_dotenv()
 
-# Optional: Gemini client
-try:
-    from google.colab import userdata as _userdata  # only in colab environment
-except Exception:
-    _userdata = None
-
+# Optional: Gemini client check
 try:
     from google import genai
 except Exception:
@@ -30,14 +25,16 @@ except Exception:
     util = None
 
 app = Flask(__name__, template_folder="templates")
-app.config.from_pyfile("instance/config.py", silent=True)  # optional
+app.config.from_pyfile("instance/config.py", silent=True)
 
-# load models (singleton)
+# Load models (singleton)
+print("⏳ Loading Models... (This may take a moment)")
 SCORER = Scorer()            # GPT-2 scorer
 EMBEDDER = Embedder()        # SentenceTransformer
-SUMMARIZER = Summarizer()    # distilbart or t5 summarizer (transformers pipeline)
+SUMMARIZER = Summarizer()    # DistilBART/T5
+print("✅ Models Loaded.")
 
-# simple in-memory run cache (per run id)
+# Simple in-memory run cache
 RUNS = {}
 
 ## ROUTES
@@ -54,12 +51,24 @@ def api_analyze():
 
     # compute phrase surprisal candidates
     words, spans, phrase_scores, protected = phrase_surprisals_for_segment(prompt)
+    
+    # FIX: phrase_scores contains 'set' objects which break JSON. 
+    # We clean them up for the frontend.
+    clean_candidates = []
+    for cand in phrase_scores[:200]:
+        clean_candidates.append({
+            "phrase": cand["phrase"],
+            "norm": cand["norm"]
+            # We explicitly exclude 'indices' (the set) here
+        })
+
     token_count = len(SCORER.tokenizer.tokenize(prompt))
+    
     resp = {
         "words": words,
         "word_spans": spans,
         "phrase_candidates_count": len(phrase_scores),
-        "top_phrase_candidates": phrase_scores[:200],
+        "top_phrase_candidates": clean_candidates, # Use the clean list
         "token_count": token_count
     }
     return jsonify(resp)
@@ -91,7 +100,7 @@ def api_prune():
         "sim": sim,
         "log": log
     }
-    return jsonify({"run_id": run_id, "compressed": compressed, "sim": sim, "log_len": len(log)})
+    return jsonify({"run_id": run_id, "compressed": compressed, "sim": sim, "log_len": len(log), "log": log})
 
 @app.route("/api/hybrid", methods=["POST"])
 def api_hybrid():
@@ -103,7 +112,7 @@ def api_hybrid():
     if not prompt:
         return jsonify({"error": "prompt required"}), 400
 
-    # run hybrid compress using SUMMARIZER and SCORER/EMBEDDER
+    # run hybrid compress
     compressed = hybrid_compress(prompt,
                                  summarizer=SUMMARIZER,
                                  embedder=EMBEDDER,
@@ -124,7 +133,9 @@ def api_generate():
     which = data.get("which", "original")  # original|pruned|hybrid
     run_id = data.get("run_id")
     model = data.get("model", "gemini-2.5-flash")
-    prompt = data.get("prompt")  # optional inline
+    prompt_inline = data.get("prompt")
+    
+    prompt_text = ""
     if run_id:
         run = RUNS.get(run_id)
         if not run:
@@ -136,21 +147,25 @@ def api_generate():
         else:
             prompt_text = run.get("hybrid") or run.get("compressed") or run.get("original")
     else:
-        if not prompt:
+        if not prompt_inline:
             return jsonify({"error": "either run_id or prompt is required"}), 400
-        prompt_text = prompt
+        prompt_text = prompt_inline
 
     # Option: local mock if genai not available
     if genai is None:
-        return jsonify({"mock": True, "text": f"(mock) would call LLM with model={model} and prompt length {len(prompt_text)}"}), 200
+        return jsonify({"mock": True, "text": f"(mock) Output for prompt length {len(prompt_text)} chars"}), 200
 
     # Build client
     api_key = os.environ.get("GOOGLE_API_KEY") or app.config.get("GOOGLE_API_KEY")
     if not api_key:
-        return jsonify({"error": "GOOGLE_API_KEY missing in env or instance config"}), 500
-    client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(model=model, contents=prompt_text)
-    return jsonify({"text": response.text})
+        return jsonify({"error": "GOOGLE_API_KEY missing"}), 500
+        
+    try:
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(model=model, contents=prompt_text)
+        return jsonify({"text": response.text})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/validate", methods=["POST"])
 def api_validate():

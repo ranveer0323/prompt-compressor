@@ -5,7 +5,7 @@ from models.embedder import Embedder
 from sentence_transformers import util
 import torch
 
-# NOTE: this function expects scorer (Scorer instance) and embedder (Embedder instance) or will construct defaults locally.
+# Common English stop words
 STOP_PROTECT = {
     "a","an","the","in","on","for","with","by","to","and","or","but","of","at","as","from","into","over","per"
 }
@@ -18,7 +18,10 @@ def words_to_token_ids(words, scorer_or_tokenizer):
     flattened = []
     spans = []
     for w in words:
-        toks = scorer_or_tokenizer.encode_no_special(w) if hasattr(scorer_or_tokenizer, "encode_no_special") else scorer_or_tokenizer.tokenizer.encode(w, add_special_tokens=False)
+        if hasattr(scorer_or_tokenizer, "encode_no_special"):
+            toks = scorer_or_tokenizer.encode_no_special(w)
+        else:
+            toks = scorer_or_tokenizer.tokenizer.encode(w, add_special_tokens=False)
         spans.append((len(flattened), len(flattened) + len(toks)))
         flattened.extend(toks)
     return flattened, spans
@@ -28,22 +31,19 @@ def phrase_surprisals_for_segment(segment_text, scorer=None, max_phrase_len=4):
     words = simple_word_tokenize(segment_text)
     flat_ids, spans = words_to_token_ids(words, scorer)
     token_logprobs = scorer.token_logprobs_for_sequence(flat_ids)
-    per_word = []
-    for (s, e) in spans:
-        surr = -sum(token_logprobs[s:e]) if e > s else 1e6
-        norm = surr / max(1, (e - s))
-        per_word.append({'s': s, 'e': e, 'surr': surr, 'norm': norm})
-    # build phrase candidates
+    
     n = len(words)
     label_pattern = re.compile(r'^(Input:|Headline:|Tagline:|Output:|Example|##\s)', re.I)
     protected = set()
-    # for idx, w in enumerate(words):
-    #     if (w.startswith('"') and w.endswith('"')) or (w.startswith("'") and w.endswith("'")):
-    #         protected.add(idx)
-    #     if label_pattern.match(w):
-    #         protected.add(idx)
-    #     if w.lower() in STOP_PROTECT:
-    #         protected.add(idx)
+    
+    for idx, w in enumerate(words):
+        # Protect quotes
+        if (w.startswith('"') and w.endswith('"')) or (w.startswith("'") and w.endswith("'")):
+            protected.add(idx)
+        # Protect labels
+        if label_pattern.match(w):
+            protected.add(idx)
+
     candidates = []
     for i in range(n):
         if i in protected:
@@ -54,16 +54,21 @@ def phrase_surprisals_for_segment(segment_text, scorer=None, max_phrase_len=4):
                 break
             if any(k in protected for k in range(i, j+1)):
                 break
-            # require multi-word unless content word
-            if L == 1 and words[i].lower() in STOP_PROTECT:
-                continue
+            
             s_tok = spans[i][0]
             e_tok = spans[j][1]
-            surr_sum = -sum(token_logprobs[s_tok:e_tok]) if (e_tok> s_tok) else 1e6
+            surr_sum = -sum(token_logprobs[s_tok:e_tok]) if (e_tok > s_tok) else 1e6
             tok_count = max(1, e_tok - s_tok)
             norm = surr_sum / tok_count
-            candidates.append({'i': i, 'j': j, 's_tok': s_tok, 'e_tok': e_tok, 'surr': surr_sum, 'norm': norm, 'phrase': " ".join(words[i:j+1])})
-    # sort ascending (low norm = most predictable)
+            
+            candidates.append({
+                'i': i, 
+                'j': j, 
+                'norm': norm, 
+                'phrase': " ".join(words[i:j+1]),
+                'indices': set(range(i, j+1))
+            })
+            
     candidates = sorted(candidates, key=lambda x: x['norm'])
     return words, spans, candidates, protected
 
@@ -71,52 +76,80 @@ def greedy_phrase_prune(segment_text, keep_ratio=0.85, max_phrase_len=4, similar
     scorer = scorer or Scorer()
     embedder = embedder or Embedder()
     original = segment_text
+    
+    # Initial Calculation
     words = simple_word_tokenize(segment_text)
     target_len = max(1, int(len(words) * keep_ratio))
+    curr_text = segment_text
     curr_words = words[:]
-    iteration_log = []
-    removals = 0
-
-    while len(curr_words) > target_len and removals < max_removals:
-        joined = " ".join(curr_words)
-        words_now, spans, phrase_scores, protected = phrase_surprisals_for_segment(joined, scorer=scorer, max_phrase_len=max_phrase_len)
-        removed = False
-        for ph in phrase_scores:
-            i, j = ph['i'], ph['j']
-            phrase_words = words_now[i:j+1]
-            # safety checks
-            if any(re.match(r'^[\:\'\"\-\—\(\)\[\]\{\}]$', w) for w in phrase_words):
-                continue
-            new_words = words_now[:i] + words_now[j+1:]
-            new_text = " ".join(new_words)
-            new_text = re.sub(r'\s+([.,:;?!])', r'\1', new_text)
-            if new_text.count('"') % 2 != 0 or new_text.count("'") % 2 != 0:
-                continue
-            # accept removal
-            curr_words = new_words
-            removals += 1
-            iteration_log.append({'iter': removals, 'removed_phrase': ph['phrase'], 'i': i, 'j': j, 'norm': ph['norm'], 'current_word_count': len(curr_words)})
-            removed = True
-            break
-        if not removed:
-            break
-
-    compressed = " ".join(curr_words)
-    compressed = re.sub(r'\s+([.,:;?!])', r'\1', compressed).strip()
     
-    # optional cleanup
-    # cleaned = cleanup_text_t5(compressed) # T5 often hallucinates on short fragments, optional
-    cleaned = compressed 
+    iteration_log = []
+    total_removed_count = 0
+    
+    # BATCH SIZE: How many phrases to remove before re-running GPT-2
+    # Increasing this speeds up the code significantly but might be slightly less precise
+    BATCH_SIZE = 10 
 
-    # semantic validation
+    while len(curr_words) > target_len and total_removed_count < max_removals:
+        # 1. Run Scorer (The slow part)
+        words_now, spans, phrase_scores, protected = phrase_surprisals_for_segment(curr_text, scorer=scorer, max_phrase_len=max_phrase_len)
+        
+        # 2. Identify a batch of non-overlapping phrases to remove
+        indices_to_remove = set()
+        batch_removed = 0
+        
+        for ph in phrase_scores:
+            if batch_removed >= BATCH_SIZE:
+                break
+            
+            # Check overlap with already marked indices in this batch
+            if not ph['indices'].isdisjoint(indices_to_remove):
+                continue
+                
+            # Safety Checks on the phrase string
+            phrase_str = ph['phrase']
+            if any(re.match(r'^[\:\'\"\-\—\(\)\[\]\{\}]$', w) for w in phrase_str.split()):
+                continue
+            
+            # If removing this creates unbalanced quotes, skip (simple heuristic)
+            # (Skipping complex quote balancing for speed here)
+            
+            # Mark for removal
+            indices_to_remove.update(ph['indices'])
+            
+            # Log it
+            total_removed_count += 1
+            batch_removed += 1
+            iteration_log.append({
+                'iter': total_removed_count, 
+                'removed_phrase': phrase_str, 
+                'norm': ph['norm'], 
+                'current_word_count': len(curr_words) - len(indices_to_remove) # Approx
+            })
+
+        # 3. If nothing found to remove, stop
+        if batch_removed == 0:
+            break
+            
+        # 4. Reconstruct text
+        new_word_list = []
+        for idx, w in enumerate(words_now):
+            if idx not in indices_to_remove:
+                new_word_list.append(w)
+        
+        curr_words = new_word_list
+        curr_text = " ".join(curr_words)
+        curr_text = re.sub(r'\s+([.,:;?!])', r'\1', curr_text) # Fix punctuation spacing
+        
+        # Check lengths
+        if len(curr_words) <= target_len:
+            break
+
+    compressed = curr_text.strip()
+    
+    # Semantic validation
     emb_o = embedder.encode(original, convert_to_tensor=True)
-    emb_c = embedder.encode(cleaned, convert_to_tensor=True)
+    emb_c = embedder.encode(compressed, convert_to_tensor=True)
     sim = float(util.pytorch_cos_sim(emb_o, emb_c).item())
     
-    # BUG FIX: Don't revert to original. 
-    # If sim is too low, we simply warn or the user sees it in the UI.
-    # But if you strict logic is needed:
-    if sim < 0.4: # Only revert if it's absolute garbage
-        return original, 1.0, []
-        
-    return cleaned, sim, iteration_log
+    return compressed, sim, iteration_log

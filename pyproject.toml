@@ -9,12 +9,12 @@ readme = "README.md"
 python = ">=3.10,<3.15"
 flask = "^3.1.2"
 transformers = "^4.57.2"
-torch = "^2.9.1"
 sentence-transformers = "^5.1.2"
 tqdm = "^4.67.1"
 google-genai = "^1.52.0"
 python-dotenv = "^1.2.1"
 hf-xet = "^1.2.0"
+torch = "^2.9.1"
 
 
 [build-system]
